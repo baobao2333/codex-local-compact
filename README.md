@@ -7,6 +7,7 @@ It reads Codex JSONL session logs from `~/.codex/sessions`, asks the local Claud
 ## Files
 
 - `local-compact.ps1` - the compaction script.
+- `examples/hooks.json` - copyable Codex hooks example.
 - `README.md` - instructions for Codex agents and humans.
 
 ## Install
@@ -33,7 +34,7 @@ Merge these entries with existing files. Do not replace unrelated hooks, setting
 
 Add or merge these entries under the top-level `hooks` object in `~/.codex/hooks.json`.
 
-Use the real absolute path to `local-compact.ps1` on the target machine.
+The copyable example is in `examples/hooks.json`. It resolves the script through `$HOME`, so it should work across Windows user names without replacing `C:\Users\...` manually.
 
 ```json
 {
@@ -44,7 +45,7 @@ Use the real absolute path to `local-compact.ps1` on the target machine.
         "hooks": [
           {
             "type": "command",
-            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"C:\\Users\\YOU\\.codex\\scripts\\local-compact.ps1\" -Trigger precompact -Force",
+            "command": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"& { & (Join-Path $HOME '.codex\\scripts\\local-compact.ps1') -Trigger precompact -Force }\"",
             "timeout": 1500,
             "statusMessage": "Running local Codex compaction"
           }
@@ -57,7 +58,7 @@ Use the real absolute path to `local-compact.ps1` on the target machine.
         "hooks": [
           {
             "type": "command",
-            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"C:\\Users\\YOU\\.codex\\scripts\\local-compact.ps1\" -Trigger postcompact -Force",
+            "command": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"& { & (Join-Path $HOME '.codex\\scripts\\local-compact.ps1') -Trigger postcompact -Force }\"",
             "timeout": 1500,
             "statusMessage": "Refreshing local compaction handoff"
           }
@@ -69,7 +70,7 @@ Use the real absolute path to `local-compact.ps1` on the target machine.
         "hooks": [
           {
             "type": "command",
-            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"C:\\Users\\YOU\\.codex\\scripts\\local-compact.ps1\" -Trigger prompt",
+            "command": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"& { & (Join-Path $HOME '.codex\\scripts\\local-compact.ps1') -Trigger prompt }\"",
             "timeout": 1500
           }
         ]

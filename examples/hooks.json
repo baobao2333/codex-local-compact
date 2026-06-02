@@ -1,0 +1,41 @@
+{
+  "hooks": {
+    "PreCompact": [
+      {
+        "matcher": "manual|auto",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"& { & (Join-Path $HOME '.codex\\scripts\\local-compact.ps1') -Trigger precompact -Force }\"",
+            "timeout": 1500,
+            "statusMessage": "Running local Codex compaction"
+          }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "matcher": "manual|auto",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"& { & (Join-Path $HOME '.codex\\scripts\\local-compact.ps1') -Trigger postcompact -Force }\"",
+            "timeout": 1500,
+            "statusMessage": "Refreshing local compaction handoff"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"& { & (Join-Path $HOME '.codex\\scripts\\local-compact.ps1') -Trigger prompt }\"",
+            "timeout": 1500
+          }
+        ]
+      }
+    ]
+  }
+}
