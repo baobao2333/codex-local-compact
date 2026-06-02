@@ -190,6 +190,51 @@ function Strip-Fence([string]$Text) {
     return $body.Trim()
 }
 
+function Test-IsEscapedQuote([string]$Text, [int]$Index) {
+    $slashes = 0
+    for ($i = $Index - 1; $i -ge 0 -and $Text[$i] -eq [char]92; $i--) {
+        $slashes++
+    }
+    return ($slashes % 2) -eq 1
+}
+
+function Repair-JsonStringQuotes([string]$Text) {
+    $sb = New-Object System.Text.StringBuilder
+    $inString = $false
+    $quote = [char]34
+    $slash = [char]92
+    $len = $Text.Length
+
+    for ($i = 0; $i -lt $len; $i++) {
+        $ch = $Text[$i]
+        if ($ch -eq $quote -and -not (Test-IsEscapedQuote $Text $i)) {
+            if (-not $inString) {
+                $inString = $true
+                [void]$sb.Append($ch)
+                continue
+            }
+
+            $j = $i + 1
+            while ($j -lt $len -and [char]::IsWhiteSpace($Text[$j])) {
+                $j++
+            }
+
+            if ($j -ge $len -or $Text[$j] -eq ':' -or $Text[$j] -eq ',' -or $Text[$j] -eq '}' -or $Text[$j] -eq ']') {
+                $inString = $false
+                [void]$sb.Append($ch)
+            } else {
+                [void]$sb.Append($slash)
+                [void]$sb.Append($quote)
+            }
+            continue
+        }
+
+        [void]$sb.Append($ch)
+    }
+
+    return $sb.ToString()
+}
+
 function Quote-Arg([string]$Text) {
     if ($null -eq $Text) {
         return '""'
@@ -264,10 +309,19 @@ function Parse-OutputJson([string]$Raw) {
     try {
         return $json | ConvertFrom-Json
     } catch {
+        try {
+            return (Repair-JsonStringQuotes $json) | ConvertFrom-Json
+        } catch {
+        }
         $start = $json.IndexOf("{")
         $end = $json.LastIndexOf("}")
         if ($start -ge 0 -and $end -gt $start) {
-            return $json.Substring($start, $end - $start + 1) | ConvertFrom-Json
+            $candidate = $json.Substring($start, $end - $start + 1)
+            try {
+                return $candidate | ConvertFrom-Json
+            } catch {
+                return (Repair-JsonStringQuotes $candidate) | ConvertFrom-Json
+            }
         }
         throw
     }
@@ -457,9 +511,10 @@ $($bundle.Text)
         trigger = $Trigger
         status = "error"
         message = $_.Exception.Message
+        stack = $_.ScriptStackTrace
     } | ConvertTo-Json -Compress) | Add-Content -LiteralPath (Join-Path $OutDir "events.jsonl") -Encoding UTF8
     if ($Force -or $Trigger -ne "prompt") {
-        ([ordered]@{ status = "error"; message = $_.Exception.Message } | ConvertTo-Json -Compress)
+        ([ordered]@{ status = "error"; message = $_.Exception.Message; stack = $_.ScriptStackTrace } | ConvertTo-Json -Compress)
     }
     exit 0
 }
