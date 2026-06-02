@@ -18,9 +18,102 @@ New-Item -ItemType Directory -Force -Path "$HOME\.codex\scripts" | Out-Null
 Copy-Item -Force .\local-compact.ps1 "$HOME\.codex\scripts\local-compact.ps1"
 ```
 
-## Codex Agent Instruction
+## Codex Setup Checklist
 
-Add this rule to the relevant `AGENTS.md` or session instructions:
+For a complete Codex setup, update all of these local files:
+
+- `~/.codex/hooks.json` - add `UserPromptSubmit`, `PreCompact`, and `PostCompact` hooks.
+- `~/.codex/config.toml` - set `experimental_compact_prompt_file`.
+- `~/.codex/compact_prompt_local.txt` - create the compact prompt used by Codex's built-in compaction.
+- `~/.codex/AGENTS.md` - add the local compaction instruction.
+
+Merge these entries with existing files. Do not replace unrelated hooks, settings, project trust entries, plugin config, or generated hook trust state.
+
+## Hooks
+
+Add or merge these entries under the top-level `hooks` object in `~/.codex/hooks.json`.
+
+Use the real absolute path to `local-compact.ps1` on the target machine.
+
+```json
+{
+  "hooks": {
+    "PreCompact": [
+      {
+        "matcher": "manual|auto",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"C:\\Users\\YOU\\.codex\\scripts\\local-compact.ps1\" -Trigger precompact -Force",
+            "timeout": 1500,
+            "statusMessage": "Running local Codex compaction"
+          }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "matcher": "manual|auto",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"C:\\Users\\YOU\\.codex\\scripts\\local-compact.ps1\" -Trigger postcompact -Force",
+            "timeout": 1500,
+            "statusMessage": "Refreshing local compaction handoff"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"C:\\Users\\YOU\\.codex\\scripts\\local-compact.ps1\" -Trigger prompt",
+            "timeout": 1500
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+## Compact Prompt
+
+Create `~/.codex/compact_prompt_local.txt`:
+
+```text
+You are compacting a Codex thread.
+
+Preserve the durable state needed to resume work without the original transcript:
+- current goal and definition of done
+- user preferences and hard instructions
+- files, config, commands, and tool results that changed the task state
+- failed or weak attempts and why they failed
+- unresolved uncertainty and exact next actions
+
+Do not erase negative evidence, rejected approaches, user corrections, or ordering-sensitive decisions.
+
+If the transcript includes a local Codex compaction handoff from `~/.codex/local-compaction/`, treat that handoff as the primary resume note and keep its structure.
+```
+
+Then add or update this setting in `~/.codex/config.toml`:
+
+```toml
+experimental_compact_prompt_file = 'C:\Users\YOU\.codex\compact_prompt_local.txt'
+```
+
+If hooks are not already enabled in the same config file, enable them:
+
+```toml
+[features]
+hooks = true
+```
+
+## Agent Instruction
+
+Add this rule to the relevant `~/.codex/AGENTS.md` or session instructions:
 
 ```text
 When the user asks to compact, compress, summarize, snapshot, hand off, or preserve context, first run:
