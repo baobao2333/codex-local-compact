@@ -4,7 +4,8 @@ param(
     [string]$Trigger = "manual",
     [string]$OutDir,
     [int]$MaxChars = 160000,
-    [int]$ModelTimeoutSec = 1200,
+    [int]$ClaudeTimeoutSec = 1200,
+    [string[]]$ClaudeArgs = @(),
     [switch]$Force
 )
 
@@ -132,7 +133,7 @@ function Build-Transcript([string]$Path, [int]$Budget) {
         if ($obj.type -eq "session_meta") {
             $sessionId = $obj.payload.id
             $cwd = $obj.payload.cwd
-            $items.Add("[$ts] session: id=$sessionId cwd=$cwd cli=$($obj.payload.cli_version) model=$($obj.payload.model_provider)")
+            $items.Add("[$ts] session: id=$sessionId cwd=$cwd cli=$($obj.payload.cli_version)")
             continue
         }
 
@@ -242,39 +243,21 @@ function Invoke-CommandWithInput([string]$Prompt, [string]$FilePath, [string[]]$
     return @{ ExitCode = $exitCode; Text = ($stdout + "`n" + $stderr).Trim() }
 }
 
-function Invoke-Compactor([string]$Prompt, [string]$SystemPrompt, [string]$Provider) {
-    $defaultClaude = Join-Path $env:APPDATA "npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe"
-    if (-not (Test-Path -LiteralPath $defaultClaude)) {
-        $defaultClaude = (Get-Command claude -ErrorAction Stop).Source
+function Invoke-Compactor([string]$Prompt, [string]$SystemPrompt, [string[]]$ExtraArgs) {
+    $claudePath = Join-Path $env:APPDATA "npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe"
+    if (-not (Test-Path -LiteralPath $claudePath)) {
+        $claudePath = (Get-Command claude -ErrorAction Stop).Source
     }
 
-    if ($Provider -eq "deepseek") {
-        $key = [Environment]::GetEnvironmentVariable("DEEPSEEK_API_KEY", "User")
-        if (-not $key -or -not (Test-Path -LiteralPath $defaultClaude)) {
-            return @{ ExitCode = 1; Text = "DeepSeek fallback is not configured." }
-        }
-
-        $oldBase = $env:ANTHROPIC_BASE_URL
-        $oldToken = $env:ANTHROPIC_AUTH_TOKEN
-        $oldModel = $env:ANTHROPIC_MODEL
-        try {
-            $env:ANTHROPIC_BASE_URL = "https://api.deepseek.com/anthropic"
-            $env:ANTHROPIC_AUTH_TOKEN = $key
-            $env:ANTHROPIC_MODEL = "deepseek-v4-pro[1m]"
-            $argv = @("-p", "--setting-sources", "project,local", "--model", "deepseek-v4-pro[1m]", "--system-prompt", $SystemPrompt, "--tools", "", "--no-session-persistence", "--output-format", "json")
-            return Invoke-CommandWithInput $Prompt $defaultClaude $argv $ModelTimeoutSec
-        } finally {
-            $env:ANTHROPIC_BASE_URL = $oldBase
-            $env:ANTHROPIC_AUTH_TOKEN = $oldToken
-            $env:ANTHROPIC_MODEL = $oldModel
-        }
+    $argv = @("-p", "--setting-sources", "user")
+    if ($ExtraArgs) {
+        $argv += $ExtraArgs
     }
-
-    $argv = @("-p", "--setting-sources", "user", "--model", "mimo-v2.5-pro", "--system-prompt", $SystemPrompt, "--tools", "", "--no-session-persistence", "--output-format", "json")
-    return Invoke-CommandWithInput $Prompt $defaultClaude $argv $ModelTimeoutSec
+    $argv += @("--system-prompt", $SystemPrompt, "--tools", "", "--no-session-persistence", "--output-format", "json")
+    return Invoke-CommandWithInput $Prompt $claudePath $argv $ClaudeTimeoutSec
 }
 
-function Parse-ModelJson([string]$Raw) {
+function Parse-OutputJson([string]$Raw) {
     $outer = $Raw | ConvertFrom-Json
     $body = if ($outer.result) { $outer.result } else { $Raw }
     $json = Strip-Fence $body
@@ -290,9 +273,9 @@ function Parse-ModelJson([string]$Raw) {
     }
 }
 
-function Write-RawAttempt([string]$BaseDir, [string]$Provider, $Attempt) {
+function Write-RawAttempt([string]$BaseDir, [string]$Runner, $Attempt) {
     New-Item -ItemType Directory -Force -Path $BaseDir | Out-Null
-    $path = Join-Path $BaseDir "last-$Provider-raw.txt"
+    $path = Join-Path $BaseDir "last-$Runner-raw.txt"
     @(
         "exit_code=$($Attempt.ExitCode)"
         "generated_at=$((Get-Date).ToString("o"))"
@@ -328,7 +311,7 @@ function Format-Value($Value) {
     return [string]$Value
 }
 
-function Write-Outputs($Summary, [string]$Provider, [string]$SourcePath, [string]$SessionId, [string]$Thread, [string]$TriggerName, [string]$BaseDir) {
+function Write-Outputs($Summary, [string]$Runner, [string]$SourcePath, [string]$SessionId, [string]$Thread, [string]$TriggerName, [string]$BaseDir) {
     $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
     $safeThread = if ($Thread) { $Thread } elseif ($SessionId) { $SessionId } else { "unknown-thread" }
     $threadDir = Join-Path $BaseDir "threads\$safeThread"
@@ -336,7 +319,7 @@ function Write-Outputs($Summary, [string]$Provider, [string]$SourcePath, [string
 
     $record = [ordered]@{
         generated_at = (Get-Date).ToString("o")
-        provider = $Provider
+        runner = $Runner
         trigger = $TriggerName
         source_session = $SourcePath
         session_id = $SessionId
@@ -354,7 +337,7 @@ function Write-Outputs($Summary, [string]$Provider, [string]$SourcePath, [string
         "# Local Codex Compaction"
         ""
         "- Generated: $($record.generated_at)"
-        "- Provider: $Provider"
+        "- Runner: $Runner"
         "- Trigger: $TriggerName"
         "- Source session: $SourcePath"
         ""
@@ -399,7 +382,7 @@ function Write-Outputs($Summary, [string]$Provider, [string]$SourcePath, [string
     $log = Join-Path $BaseDir "events.jsonl"
     ([ordered]@{
         generated_at = $record.generated_at
-        provider = $Provider
+        runner = $Runner
         trigger = $TriggerName
         source_session = $SourcePath
         markdown = $mdPath
@@ -408,7 +391,7 @@ function Write-Outputs($Summary, [string]$Provider, [string]$SourcePath, [string
 
     return @{
         status = "ok"
-        provider = $Provider
+        runner = $Runner
         markdown = $mdPath
         json = $jsonPath
         latest = $globalLatest
@@ -447,39 +430,25 @@ Transcript:
 $($bundle.Text)
 "@
 
-    $provider = "mimo"
-    $raw = Invoke-Compactor $prompt $system $provider
-    Write-RawAttempt $OutDir $provider $raw
+    $runner = "claude-code"
+    $raw = Invoke-Compactor $prompt $system $ClaudeArgs
+    Write-RawAttempt $OutDir $runner $raw
     $summary = $null
 
     if ($raw.ExitCode -eq 0 -and $raw.Text.Trim()) {
         try {
-            $summary = Parse-ModelJson $raw.Text
+            $summary = Parse-OutputJson $raw.Text
         } catch {
-            $_.Exception.Message | Set-Content -LiteralPath (Join-Path $OutDir "last-$provider-parse-error.txt") -Encoding UTF8
+            $_.Exception.Message | Set-Content -LiteralPath (Join-Path $OutDir "last-$runner-parse-error.txt") -Encoding UTF8
             $summary = $null
         }
     }
 
-    if ($null -eq $summary -and $raw.ExitCode -ne 124) {
-        $provider = "deepseek"
-        $raw = Invoke-Compactor $prompt $system $provider
-        Write-RawAttempt $OutDir $provider $raw
-        if ($raw.ExitCode -eq 0 -and $raw.Text.Trim()) {
-            try {
-                $summary = Parse-ModelJson $raw.Text
-            } catch {
-                $_.Exception.Message | Set-Content -LiteralPath (Join-Path $OutDir "last-$provider-parse-error.txt") -Encoding UTF8
-                $summary = $null
-            }
-        }
-    }
-
     if ($null -eq $summary) {
-        throw "Local compaction model did not return parseable JSON."
+        throw "Local Claude Code compaction did not return parseable JSON."
     }
 
-    $result = Write-Outputs $summary $provider $SessionPath $bundle.SessionId $ThreadId $Trigger $OutDir
+    $result = Write-Outputs $summary $runner $SessionPath $bundle.SessionId $ThreadId $Trigger $OutDir
     $result | ConvertTo-Json -Compress
 } catch {
     New-Item -ItemType Directory -Force -Path $OutDir | Out-Null

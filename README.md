@@ -2,7 +2,7 @@
 
 Small PowerShell helper for saving a local handoff snapshot from Codex session history.
 
-It reads Codex JSONL session logs from `~/.codex/sessions`, asks the configured compaction model for a structured summary, and writes Markdown/JSON handoff files under `~/.codex/local-compaction`.
+It reads Codex JSONL session logs from `~/.codex/sessions`, asks the local Claude Code environment for a structured summary, and writes Markdown/JSON handoff files under `~/.codex/local-compaction`.
 
 ## Files
 
@@ -64,14 +64,13 @@ Important files:
 - `threads/<thread-id>/latest.md` - latest handoff for one thread.
 - `threads/<thread-id>/latest.json` - latest structured summary for one thread.
 - `events.jsonl` - append-only event log.
-- `last-<provider>-raw.txt` - latest raw model response for debugging.
+- `last-<runner>-raw.txt` - latest raw Claude Code response for debugging.
 
 ## Requirements
 
 - Windows PowerShell.
 - Codex session logs under `~/.codex/sessions`.
 - Claude Code CLI available at the default npm location or on `PATH`.
-- Optional DeepSeek fallback through the user-level `DEEPSEEK_API_KEY` environment variable.
 
 ## Parameters
 
@@ -80,5 +79,6 @@ Important files:
 - `-Trigger` - trigger name written into output metadata.
 - `-OutDir` - output directory, defaulting to `~/.codex/local-compaction`.
 - `-MaxChars` - transcript character budget before truncation.
-- `-ModelTimeoutSec` - model invocation timeout.
+- `-ClaudeTimeoutSec` - local Claude Code invocation timeout.
+- `-ClaudeArgs` - optional arguments passed through to the local Claude Code CLI.
 - `-Force` - force output even when trigger detection would otherwise skip.
