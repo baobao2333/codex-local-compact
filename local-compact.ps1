@@ -10,6 +10,11 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+try {
+    [Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
+    [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+} catch {
+}
 
 $CodexHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $HOME ".codex" }
 if (-not $OutDir) {
@@ -54,11 +59,57 @@ function Test-Trigger([string]$Text) {
         ($Text.Contains($context) -and $Text.Contains($summary))
 }
 
+function Read-HookInput([string]$Text) {
+    if (-not $Text -or -not $Text.Trim()) {
+        return $null
+    }
+    try {
+        return $Text | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        return $null
+    }
+}
+
 function Limit-Text([string]$Text, [int]$Limit) {
     if (-not $Text -or $Text.Length -le $Limit) {
         return $Text
     }
     return $Text.Substring(0, $Limit) + "`n[...truncated...]"
+}
+
+function Write-SessionStartContext([string]$Thread, [string]$BaseDir) {
+    if (-not $Thread) {
+        return [pscustomobject]@{ WroteContext = $false; Output = $null }
+    }
+
+    New-Item -ItemType Directory -Force -Path $BaseDir | Out-Null
+
+    $latest = Join-Path (Join-Path (Join-Path $BaseDir "threads") $Thread) "latest.md"
+    if (-not (Test-Path -LiteralPath $latest)) {
+        return [pscustomobject]@{ WroteContext = $false; Output = $null }
+    }
+
+    $content = Limit-Text (Get-Content -LiteralPath $latest -Raw) 20000
+    $output = ([ordered]@{
+        hookSpecificOutput = [ordered]@{
+            hookEventName = "SessionStart"
+            additionalContext = "Local compaction handoff from ${latest}. Treat this as historical resume context; current user/developer instructions and later corrections override it.`n`n$content"
+        }
+    } | ConvertTo-Json -Depth 8 -Compress)
+    return [pscustomobject]@{ WroteContext = $true; Output = $output }
+}
+
+function Write-SessionStartEvent($HookInput, [string]$Thread, [string]$BaseDir, [bool]$WroteContext) {
+    New-Item -ItemType Directory -Force -Path $BaseDir | Out-Null
+    ([ordered]@{
+        generated_at = (Get-Date).ToString("o")
+        trigger = "sessionstart"
+        hook_source = $HookInput.source
+        hook_event_name = $HookInput.hook_event_name
+        session_id = $HookInput.session_id
+        thread_id = $Thread
+        wrote_context = $WroteContext
+    } | ConvertTo-Json -Compress) | Add-Content -LiteralPath (Join-Path $BaseDir "events.jsonl") -Encoding UTF8
 }
 
 function Get-ContentText($Content) {
@@ -453,7 +504,86 @@ function Write-Outputs($Summary, [string]$Runner, [string]$SourcePath, [string]$
 }
 
 $stdinText = Read-RedirectedInput
-if (-not $Force -and $Trigger -eq "prompt" -and -not (Test-Trigger $stdinText)) {
+$hookInput = Read-HookInput $stdinText
+
+if (-not $ThreadId -and $hookInput -and $hookInput.session_id) {
+    $ThreadId = $hookInput.session_id
+}
+if (-not $SessionPath -and $hookInput -and $hookInput.transcript_path) {
+    $SessionPath = $hookInput.transcript_path
+}
+
+if ($Trigger -eq "sessionstart") {
+    if (-not $hookInput -or $hookInput.hook_event_name -ne "SessionStart" -or $hookInput.source -ne "compact") {
+        exit 0
+    }
+    $contextResult = Write-SessionStartContext $ThreadId $OutDir
+    Write-SessionStartEvent $hookInput $ThreadId $OutDir $contextResult.WroteContext
+    if ($contextResult.Output) {
+        $contextResult.Output
+    }
+    exit 0
+}
+
+if ($Trigger -eq "proxycompact") {
+    try {
+        New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
+        if (-not $ThreadId) {
+            $ThreadId = Find-FirstUuid $stdinText
+        }
+
+        $contextText = Limit-Text $stdinText $MaxChars
+        $system = "You are a strict local context compaction engine for Codex. Return only a valid JSON object. No markdown. No prose outside JSON. Preserve user intent, hard constraints, durable preferences, tool results, file/config edits, failed attempts, uncertainties, and the exact next action. Do not add new requirements or invented facts."
+
+        $prompt = @"
+Compress this Codex /responses/compact request context into JSON with exactly these keys:
+current_goal, hard_constraints, user_preferences, established_facts, completed_work, files_or_config_changed, failed_or_weak_attempts, open_questions, next_actions, resume_note.
+
+Context:
+- trigger: $Trigger
+- source_session: proxy:/responses/compact
+- thread_id: $ThreadId
+
+Compact request context:
+$contextText
+"@
+
+        $runner = "claude-code"
+        $raw = Invoke-Compactor $prompt $system $ClaudeArgs
+        Write-RawAttempt $OutDir $runner $raw
+        $summary = $null
+
+        if ($raw.ExitCode -eq 0 -and $raw.Text.Trim()) {
+            try {
+                $summary = Parse-OutputJson $raw.Text
+            } catch {
+                $_.Exception.Message | Set-Content -LiteralPath (Join-Path $OutDir "last-$runner-parse-error.txt") -Encoding UTF8
+                $summary = $null
+            }
+        }
+
+        if ($null -eq $summary) {
+            throw "Local Claude Code compaction did not return parseable JSON."
+        }
+
+        $result = Write-Outputs $summary $runner "proxy:/responses/compact" $ThreadId $ThreadId $Trigger $OutDir
+        $result | ConvertTo-Json -Compress
+    } catch {
+        New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
+        ([ordered]@{
+            generated_at = (Get-Date).ToString("o")
+            trigger = $Trigger
+            status = "error"
+            message = $_.Exception.Message
+            stack = $_.ScriptStackTrace
+        } | ConvertTo-Json -Compress) | Add-Content -LiteralPath (Join-Path $OutDir "events.jsonl") -Encoding UTF8
+        ([ordered]@{ status = "error"; message = $_.Exception.Message; stack = $_.ScriptStackTrace } | ConvertTo-Json -Compress)
+    }
+    exit 0
+}
+
+$promptText = if ($hookInput -and $hookInput.prompt) { $hookInput.prompt } else { $stdinText }
+if (-not $Force -and $Trigger -eq "prompt" -and -not (Test-Trigger $promptText)) {
     exit 0
 }
 
@@ -504,11 +634,7 @@ $($bundle.Text)
 
     $result = Write-Outputs $summary $runner $SessionPath $bundle.SessionId $ThreadId $Trigger $OutDir
     if ($Trigger -eq "precompact") {
-        ([ordered]@{
-            "continue" = $false
-            stopReason = "Local Codex compaction handoff was written; skipped built-in compaction."
-            systemMessage = "Local compaction handoff written to $($result.latest). Built-in compaction skipped."
-        } | ConvertTo-Json -Compress)
+        exit 0
     } else {
         $result | ConvertTo-Json -Compress
     }
@@ -522,11 +648,7 @@ $($bundle.Text)
         stack = $_.ScriptStackTrace
     } | ConvertTo-Json -Compress) | Add-Content -LiteralPath (Join-Path $OutDir "events.jsonl") -Encoding UTF8
     if ($Trigger -eq "precompact") {
-        ([ordered]@{
-            "continue" = $false
-            stopReason = "Local Codex compaction failed; skipped built-in compaction."
-            systemMessage = "Local compaction failed and built-in compaction was skipped. Check $OutDir\events.jsonl."
-        } | ConvertTo-Json -Compress)
+        exit 0
     } elseif ($Force -or $Trigger -ne "prompt") {
         ([ordered]@{ status = "error"; message = $_.Exception.Message; stack = $_.ScriptStackTrace } | ConvertTo-Json -Compress)
     }
