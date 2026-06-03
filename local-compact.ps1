@@ -503,7 +503,15 @@ $($bundle.Text)
     }
 
     $result = Write-Outputs $summary $runner $SessionPath $bundle.SessionId $ThreadId $Trigger $OutDir
-    $result | ConvertTo-Json -Compress
+    if ($Trigger -eq "precompact") {
+        ([ordered]@{
+            "continue" = $false
+            stopReason = "Local Codex compaction handoff was written; skipped built-in compaction."
+            systemMessage = "Local compaction handoff written to $($result.latest). Built-in compaction skipped."
+        } | ConvertTo-Json -Compress)
+    } else {
+        $result | ConvertTo-Json -Compress
+    }
 } catch {
     New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
     ([ordered]@{
@@ -513,7 +521,13 @@ $($bundle.Text)
         message = $_.Exception.Message
         stack = $_.ScriptStackTrace
     } | ConvertTo-Json -Compress) | Add-Content -LiteralPath (Join-Path $OutDir "events.jsonl") -Encoding UTF8
-    if ($Force -or $Trigger -ne "prompt") {
+    if ($Trigger -eq "precompact") {
+        ([ordered]@{
+            "continue" = $false
+            stopReason = "Local Codex compaction failed; skipped built-in compaction."
+            systemMessage = "Local compaction failed and built-in compaction was skipped. Check $OutDir\events.jsonl."
+        } | ConvertTo-Json -Compress)
+    } elseif ($Force -or $Trigger -ne "prompt") {
         ([ordered]@{ status = "error"; message = $_.Exception.Message; stack = $_.ScriptStackTrace } | ConvertTo-Json -Compress)
     }
     exit 0

@@ -24,7 +24,7 @@ Copy-Item -Force .\local-compact.ps1 "$HOME\.codex\scripts\local-compact.ps1"
 For a complete Codex setup, update all of these local files:
 
 - `~/.codex/hooks.json` - add `UserPromptSubmit`, `PreCompact`, and `PostCompact` hooks.
-- `~/.codex/config.toml` - set `experimental_compact_prompt_file` and disable built-in request compression.
+- `~/.codex/config.toml` - set `experimental_compact_prompt_file` and enable hooks.
 - `~/.codex/compact_prompt_local.txt` - create the compact prompt used by Codex's built-in compaction.
 - `~/.codex/AGENTS.md` - add the local compaction instruction.
 
@@ -35,6 +35,8 @@ Merge these entries with existing files. Do not replace unrelated hooks, setting
 Add or merge these entries under the top-level `hooks` object in `~/.codex/hooks.json`.
 
 The copyable example is in `examples/hooks.json`. It resolves the script through `$HOME`, so it should work across Windows user names without replacing `C:\Users\...` manually.
+
+When the `PreCompact` hook succeeds, `local-compact.ps1` writes the local handoff and returns `continue: false`. Codex then stops before running its built-in compact request. Keep request compression enabled/default so Codex still raises the compact lifecycle event for the hook to intercept.
 
 ```json
 {
@@ -105,12 +107,11 @@ Then add or update this setting in `~/.codex/config.toml`:
 experimental_compact_prompt_file = 'C:\Users\YOU\.codex\compact_prompt_local.txt'
 ```
 
-For local-only handoff behavior, disable Codex's built-in request compression so automatic compaction does not call the remote compact endpoint:
+If hooks are not already enabled in the same config file, enable them:
 
 ```toml
 [features]
 hooks = true
-enable_request_compression = false
 ```
 
 Restart Codex or start a new thread after changing `config.toml`, so the updated feature flags are loaded.
