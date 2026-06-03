@@ -504,6 +504,8 @@ function Write-Outputs($Summary, [string]$Runner, [string]$SourcePath, [string]$
         runner = $Runner
         trigger = $TriggerName
         source_session = $SourcePath
+        session_id = $SessionId
+        thread_id = $safeThread
         markdown = $mdPath
         json = $jsonPath
     } | ConvertTo-Json -Compress) | Add-Content -LiteralPath $log -Encoding UTF8

@@ -38,7 +38,7 @@ Add or merge these entries under the top-level `hooks` object in `~/.codex/hooks
 The copyable example is in `examples/hooks.json`. It resolves the script through `$HOME`, so it should work across Windows user names without replacing `C:\Users\...` manually.
 After changing hooks, review and trust new hook entries with `/hooks`.
 
-When the `PreCompact` hook runs, `local-compact.ps1` writes the local handoff from the Codex session transcript and exits without hook control output. Keep request compression enabled/default so Codex still raises the compact lifecycle event. Returning `continue: false` from `PreCompact` stops before compacting and can stop the current turn before the model replies.
+When the `PreCompact` hook runs, `local-compact.ps1` writes the local handoff from the Codex session transcript and exits without hook control output. Keep request compression enabled/default so Codex still raises the compact lifecycle event. Returning `continue: false` from `PreCompact` stops before compacting and can stop the current turn before the model replies. Manual `/compact` and automatic compaction both use this lifecycle; the hook matcher is `manual|auto`.
 
 When Codex raises `PostCompact`, the hook records that the lifecycle completed, but it does not run another local compaction. The compact proxy reuses the recent `PreCompact` handoff as the replacement compact result, which avoids compressing the same context twice.
 
@@ -103,9 +103,9 @@ When Codex raises `PostCompact`, the hook records that the lifecycle completed, 
 
 ## Full Local Compact Replacement
 
-Hooks alone cannot inject replacement history for automatic compaction. To fully replace remote compaction, run the compact proxy and configure Codex to use it as an OpenAI-named Responses provider. The proxy intercepts `POST /responses/compact`, returns the latest recent `PreCompact` handoff as compact replacement history, and forwards normal `POST /responses` traffic upstream.
+Hooks alone cannot inject replacement history for compaction. To fully replace remote compaction, run the compact proxy and configure Codex to use it as an OpenAI-named Responses provider. The proxy intercepts `POST /responses/compact`, returns a matching recent `PreCompact` handoff as compact replacement history, and forwards normal `POST /responses` traffic upstream.
 
-If no recent `PreCompact` handoff is available, the proxy falls back to `local-compact.ps1 -Trigger proxycompact` so compact requests still complete. You can tune the handoff window with `CODEX_COMPACT_PROXY_HANDOFF_MAX_AGE_MS` (default: `300000`).
+The proxy avoids cross-window handoff pollution. It only reuses a handoff when the compact request matches it by marker or session/thread UUID. If no reliable match exists, the proxy falls back to `local-compact.ps1 -Trigger proxycompact` so compact requests still complete without reusing another window's context. You can tune the handoff window with `CODEX_COMPACT_PROXY_HANDOFF_MAX_AGE_MS` (default: `300000`).
 
 Start the proxy:
 

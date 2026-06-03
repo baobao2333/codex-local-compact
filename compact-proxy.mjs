@@ -70,6 +70,16 @@ function collectText(value, out = []) {
   return out;
 }
 
+function findUuids(text) {
+  return [
+    ...new Set(
+      String(text || "").match(
+        /\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b/g,
+      ) || [],
+    ),
+  ];
+}
+
 function compactResponse(summaryText) {
   return {
     output: [
@@ -87,10 +97,11 @@ function compactResponse(summaryText) {
   };
 }
 
-function readRecentPrecompactHandoff(marker) {
+function readRecentPrecompactHandoff(marker, requestIds) {
   const eventsPath = path.join(compactionDir, "events.jsonl");
   if (!fs.existsSync(eventsPath)) return null;
 
+  const candidates = [];
   const lines = fs.readFileSync(eventsPath, "utf8").trim().split(/\r?\n/);
   for (let i = lines.length - 1; i >= 0; i--) {
     let event;
@@ -107,15 +118,46 @@ function readRecentPrecompactHandoff(marker) {
     if (!fs.existsSync(event.markdown)) continue;
 
     const markdown = fs.readFileSync(event.markdown, "utf8");
-    if (marker && !markdown.includes(marker)) continue;
-
-    return {
+    candidates.push({
       markdown,
       markdownPath: event.markdown,
       ageMs,
       event,
-    };
+    });
   }
+
+  if (marker) {
+    const markerMatches = candidates.filter((candidate) =>
+      candidate.markdown.includes(marker),
+    );
+    if (markerMatches.length === 1) {
+      return { ...markerMatches[0], match: "marker", candidates: candidates.length };
+    }
+    if (markerMatches.length > 1) {
+      return { ...markerMatches[0], match: "marker-latest", candidates: candidates.length };
+    }
+  }
+
+  if (requestIds.length > 0) {
+    const idMatches = candidates.filter((candidate) => {
+      const haystack = [
+        candidate.event.session_id,
+        candidate.event.thread_id,
+        candidate.event.source_session,
+        candidate.event.markdown,
+        candidate.event.json,
+        candidate.markdown,
+      ].join("\n");
+      return requestIds.some((id) => haystack.includes(id));
+    });
+    if (idMatches.length === 1) {
+      return { ...idMatches[0], match: "session-id", candidates: candidates.length };
+    }
+    if (idMatches.length > 1) {
+      return { ...idMatches[0], match: "session-id-latest", candidates: candidates.length };
+    }
+  }
+
   return null;
 }
 
@@ -173,11 +215,14 @@ function runLocalCompactor(inputText) {
   });
 }
 
-async function summarizeCompactRequest(body) {
+async function summarizeCompactRequest(req, body) {
   const parsed = JSON.parse(body.toString("utf8"));
   const text = collectText(parsed).join("\n");
   const marker = text.match(/[A-Z0-9_]*MARKER[A-Z0-9_]*_[A-Z0-9_]+/)?.[0] || null;
-  const handoff = readRecentPrecompactHandoff(marker);
+  const requestIds = findUuids(
+    `${req.url}\n${JSON.stringify(req.headers)}\n${body.toString("utf8")}\n${text}`,
+  );
+  const handoff = readRecentPrecompactHandoff(marker, requestIds);
   if (handoff) {
     const summary = [
       "LOCAL_COMPACT_PROXY_SUMMARY=YES",
@@ -186,6 +231,7 @@ async function summarizeCompactRequest(body) {
       `INPUT_TEXT_CHARS=${text.length}`,
       `HANDOFF_MARKDOWN=${handoff.markdownPath}`,
       `HANDOFF_AGE_MS=${Math.max(0, handoff.ageMs)}`,
+      `HANDOFF_MATCH=${handoff.match}`,
       "",
       handoff.markdown,
     ].join("\n");
@@ -195,6 +241,9 @@ async function summarizeCompactRequest(body) {
       source: "precompact-handoff",
       handoffPath: handoff.markdownPath,
       handoffAgeMs: handoff.ageMs,
+      handoffMatch: handoff.match,
+      handoffCandidates: handoff.candidates,
+      requestIds: requestIds.length,
       response: compactResponse(summary),
     };
   }
@@ -218,10 +267,11 @@ async function summarizeCompactRequest(body) {
     ].join("\n");
     return {
       marker,
-      textChars: text.length,
-      source: "local-compact.ps1",
-      response: compactResponse(summary),
-    };
+    textChars: text.length,
+    source: "local-compact.ps1",
+    requestIds: requestIds.length,
+    response: compactResponse(summary),
+  };
   } catch (error) {
     appendLog({ kind: "local_compact_error", message: error.message });
   }
@@ -244,6 +294,7 @@ async function summarizeCompactRequest(body) {
     marker,
     textChars: text.length,
     source: "stub",
+    requestIds: requestIds.length,
     response: compactResponse(summary),
   };
 }
@@ -308,7 +359,7 @@ const server = http.createServer(async (req, res) => {
   const body = await readBody(req);
   if (req.method === "POST" && new URL(req.url, "http://local").pathname.endsWith("/responses/compact")) {
     try {
-      const compact = await summarizeCompactRequest(body);
+      const compact = await summarizeCompactRequest(req, body);
       appendLog({
         kind: "compact",
         path: req.url,
@@ -317,6 +368,9 @@ const server = http.createServer(async (req, res) => {
         input_text_chars: compact.textChars,
         handoff_path: compact.handoffPath ?? null,
         handoff_age_ms: compact.handoffAgeMs ?? null,
+        handoff_match: compact.handoffMatch ?? null,
+        handoff_candidates: compact.handoffCandidates ?? null,
+        request_ids: compact.requestIds ?? null,
       });
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify(compact.response));
