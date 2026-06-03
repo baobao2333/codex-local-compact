@@ -34,7 +34,7 @@
             "type": "command",
             "command": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"& { & (Join-Path $HOME '.codex\\scripts\\local-compact.ps1') -Trigger postcompact -Force }\"",
             "timeout": 1500,
-            "statusMessage": "Refreshing local compaction handoff"
+            "statusMessage": "Recording local compact lifecycle"
           }
         ]
       }

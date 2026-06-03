@@ -11,19 +11,13 @@ const upstream = new URL(
   process.env.CODEX_COMPACT_PROXY_UPSTREAM ||
     "https://chatgpt.com/backend-api/codex",
 );
+const codexHome = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
+const compactionDir = path.join(codexHome, "local-compaction");
 const prefix =
   "Another language model started to solve this problem and produced a summary of its thinking process. You also have access to the state of the tools that were used by that language model. Use this to build on the work that has already been done and avoid duplicating work. Here is the summary produced by the other language model, use the information in this summary to assist with your own analysis:";
-const logPath = path.join(
-  process.env.CODEX_HOME || path.join(os.homedir(), ".codex"),
-  "local-compaction",
-  "proxy-events.jsonl",
-);
+const logPath = path.join(compactionDir, "proxy-events.jsonl");
 const compactScript = (() => {
-  const homeScript = path.join(
-    process.env.CODEX_HOME || path.join(os.homedir(), ".codex"),
-    "scripts",
-    "local-compact.ps1",
-  );
+  const homeScript = path.join(codexHome, "scripts", "local-compact.ps1");
   if (process.env.CODEX_LOCAL_COMPACT_SCRIPT) {
     return process.env.CODEX_LOCAL_COMPACT_SCRIPT;
   }
@@ -34,6 +28,9 @@ const compactScript = (() => {
 })();
 const localCompactTimeoutMs = Number(
   process.env.CODEX_COMPACT_PROXY_LOCAL_TIMEOUT_MS || 900000,
+);
+const handoffMaxAgeMs = Number(
+  process.env.CODEX_COMPACT_PROXY_HANDOFF_MAX_AGE_MS || 300000,
 );
 
 function readBody(req) {
@@ -88,6 +85,38 @@ function compactResponse(summaryText) {
       },
     ],
   };
+}
+
+function readRecentPrecompactHandoff(marker) {
+  const eventsPath = path.join(compactionDir, "events.jsonl");
+  if (!fs.existsSync(eventsPath)) return null;
+
+  const lines = fs.readFileSync(eventsPath, "utf8").trim().split(/\r?\n/);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    let event;
+    try {
+      event = JSON.parse(lines[i]);
+    } catch {
+      continue;
+    }
+    if (event.trigger !== "precompact" || !event.markdown) continue;
+
+    const generatedAt = Date.parse(event.generated_at);
+    const ageMs = Number.isFinite(generatedAt) ? Date.now() - generatedAt : Infinity;
+    if (ageMs > handoffMaxAgeMs) break;
+    if (!fs.existsSync(event.markdown)) continue;
+
+    const markdown = fs.readFileSync(event.markdown, "utf8");
+    if (marker && !markdown.includes(marker)) continue;
+
+    return {
+      markdown,
+      markdownPath: event.markdown,
+      ageMs,
+      event,
+    };
+  }
+  return null;
 }
 
 function runLocalCompactor(inputText) {
@@ -148,6 +177,28 @@ async function summarizeCompactRequest(body) {
   const parsed = JSON.parse(body.toString("utf8"));
   const text = collectText(parsed).join("\n");
   const marker = text.match(/[A-Z0-9_]*MARKER[A-Z0-9_]*_[A-Z0-9_]+/)?.[0] || null;
+  const handoff = readRecentPrecompactHandoff(marker);
+  if (handoff) {
+    const summary = [
+      "LOCAL_COMPACT_PROXY_SUMMARY=YES",
+      "LOCAL_COMPACT_PROXY_SOURCE=precompact-handoff",
+      marker ? `MARKER=${marker}` : "MARKER=NONE",
+      `INPUT_TEXT_CHARS=${text.length}`,
+      `HANDOFF_MARKDOWN=${handoff.markdownPath}`,
+      `HANDOFF_AGE_MS=${Math.max(0, handoff.ageMs)}`,
+      "",
+      handoff.markdown,
+    ].join("\n");
+    return {
+      marker,
+      textChars: text.length,
+      source: "precompact-handoff",
+      handoffPath: handoff.markdownPath,
+      handoffAgeMs: handoff.ageMs,
+      response: compactResponse(summary),
+    };
+  }
+
   const proxyContext = [
     "Codex /responses/compact request text follows.",
     marker ? `Detected marker: ${marker}` : "Detected marker: NONE",
@@ -264,6 +315,8 @@ const server = http.createServer(async (req, res) => {
         source: compact.source,
         marker: compact.marker,
         input_text_chars: compact.textChars,
+        handoff_path: compact.handoffPath ?? null,
+        handoff_age_ms: compact.handoffAgeMs ?? null,
       });
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify(compact.response));

@@ -112,6 +112,20 @@ function Write-SessionStartEvent($HookInput, [string]$Thread, [string]$BaseDir, 
     } | ConvertTo-Json -Compress) | Add-Content -LiteralPath (Join-Path $BaseDir "events.jsonl") -Encoding UTF8
 }
 
+function Write-PostCompactEvent($HookInput, [string]$Thread, [string]$SourcePath, [string]$BaseDir) {
+    New-Item -ItemType Directory -Force -Path $BaseDir | Out-Null
+    ([ordered]@{
+        generated_at = (Get-Date).ToString("o")
+        trigger = "postcompact"
+        status = "recorded"
+        hook_event_name = $HookInput.hook_event_name
+        hook_trigger = $HookInput.trigger
+        session_id = $HookInput.session_id
+        thread_id = $Thread
+        source_session = $SourcePath
+    } | ConvertTo-Json -Compress) | Add-Content -LiteralPath (Join-Path $BaseDir "events.jsonl") -Encoding UTF8
+}
+
 function Get-ContentText($Content) {
     if ($null -eq $Content) {
         return ""
@@ -522,6 +536,11 @@ if ($Trigger -eq "sessionstart") {
     if ($contextResult.Output) {
         $contextResult.Output
     }
+    exit 0
+}
+
+if ($Trigger -eq "postcompact") {
+    Write-PostCompactEvent $hookInput $ThreadId $SessionPath $OutDir
     exit 0
 }
 
