@@ -24,7 +24,7 @@ Copy-Item -Force .\local-compact.ps1 "$HOME\.codex\scripts\local-compact.ps1"
 For a complete Codex setup, update all of these local files:
 
 - `~/.codex/hooks.json` - add `UserPromptSubmit`, `PreCompact`, and `PostCompact` hooks.
-- `~/.codex/config.toml` - set `experimental_compact_prompt_file`.
+- `~/.codex/config.toml` - set `experimental_compact_prompt_file` and disable built-in request compression.
 - `~/.codex/compact_prompt_local.txt` - create the compact prompt used by Codex's built-in compaction.
 - `~/.codex/AGENTS.md` - add the local compaction instruction.
 
@@ -105,12 +105,15 @@ Then add or update this setting in `~/.codex/config.toml`:
 experimental_compact_prompt_file = 'C:\Users\YOU\.codex\compact_prompt_local.txt'
 ```
 
-If hooks are not already enabled in the same config file, enable them:
+For local-only handoff behavior, disable Codex's built-in request compression so automatic compaction does not call the remote compact endpoint:
 
 ```toml
 [features]
 hooks = true
+enable_request_compression = false
 ```
+
+Restart Codex or start a new thread after changing `config.toml`, so the updated feature flags are loaded.
 
 ## Agent Instruction
 
