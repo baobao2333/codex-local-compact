@@ -106,7 +106,7 @@ Hooks alone cannot inject replacement history for automatic compaction. To fully
 Start the proxy:
 
 ```powershell
-node C:\Users\49197\codex-local-compact\compact-proxy.mjs
+node .\compact-proxy.mjs
 ```
 
 Use this provider shape in `~/.codex/config.toml` or with `codex exec -c` overrides:
