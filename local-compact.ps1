@@ -20,6 +20,7 @@ $CodexHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $HOME ".c
 if (-not $OutDir) {
     $OutDir = Join-Path $CodexHome "local-compaction"
 }
+$RecentHandoffChars = 12000
 
 function Read-RedirectedInput {
     if ([Console]::IsInputRedirected) {
@@ -75,6 +76,16 @@ function Limit-Text([string]$Text, [int]$Limit) {
         return $Text
     }
     return $Text.Substring(0, $Limit) + "`n[...truncated...]"
+}
+
+function Get-RecentHandoff([string]$Text, [int]$Limit) {
+    if (-not $Text) {
+        return ""
+    }
+    if ($Text.Length -le $Limit) {
+        return $Text
+    }
+    return "[...recent transcript handoff truncated to last $Limit characters...]`n" + $Text.Substring($Text.Length - $Limit)
 }
 
 function Write-SessionStartContext([string]$Thread, [string]$BaseDir) {
@@ -430,11 +441,12 @@ function Format-Value($Value) {
     return [string]$Value
 }
 
-function Write-Outputs($Summary, [string]$Runner, [string]$SourcePath, [string]$SessionId, [string]$Thread, [string]$TriggerName, [string]$BaseDir) {
+function Write-Outputs($Summary, [string]$Runner, [string]$SourcePath, [string]$SessionId, [string]$Thread, [string]$TriggerName, [string]$RecentHandoff, [string]$BaseDir) {
     $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
     $safeThread = if ($Thread) { $Thread } elseif ($SessionId) { $SessionId } else { "unknown-thread" }
     $threadDir = Join-Path $BaseDir "threads\$safeThread"
     New-Item -ItemType Directory -Force -Path $threadDir | Out-Null
+    $handoffText = if ($RecentHandoff) { $RecentHandoff } else { "- None" }
 
     $record = [ordered]@{
         generated_at = (Get-Date).ToString("o")
@@ -444,6 +456,7 @@ function Write-Outputs($Summary, [string]$Runner, [string]$SourcePath, [string]$
         session_id = $SessionId
         thread_id = $safeThread
         summary = $Summary
+        recent_handoff = $RecentHandoff
     }
 
     $json = $record | ConvertTo-Json -Depth 18
@@ -489,6 +502,13 @@ function Write-Outputs($Summary, [string]$Runner, [string]$SourcePath, [string]$
         ""
         "## Resume Note"
         (Format-Value $Summary.resume_note)
+        ""
+        "## Recent Transcript Handoff"
+        "This excerpt is deterministic transcript text from the newest context, not model-summarized. Use it to recover exact recent wording when the structured summary is ambiguous."
+        ""
+        "----- BEGIN RECENT TRANSCRIPT HANDOFF -----"
+        $handoffText
+        "----- END RECENT TRANSCRIPT HANDOFF -----"
     ) -join "`n"
 
     $mdPath = Join-Path $threadDir "$stamp-$TriggerName.md"
@@ -508,6 +528,7 @@ function Write-Outputs($Summary, [string]$Runner, [string]$SourcePath, [string]$
         thread_id = $safeThread
         markdown = $mdPath
         json = $jsonPath
+        recent_handoff_chars = if ($RecentHandoff) { $RecentHandoff.Length } else { 0 }
     } | ConvertTo-Json -Compress) | Add-Content -LiteralPath $log -Encoding UTF8
 
     return @{
@@ -554,11 +575,21 @@ if ($Trigger -eq "proxycompact") {
         }
 
         $contextText = Limit-Text $stdinText $MaxChars
-        $system = "You are a strict local context compaction engine for Codex. Return only a valid JSON object. No markdown. No prose outside JSON. Preserve user intent, hard constraints, durable preferences, tool results, file/config edits, failed attempts, uncertainties, and the exact next action. Do not add new requirements or invented facts."
+        $recentHandoff = Get-RecentHandoff $contextText $RecentHandoffChars
+        $system = "You are a strict local context compaction engine for Codex. Return only a valid JSON object. No markdown. No prose outside JSON. Build a resume-ready handoff, not a chronological recap. Preserve user intent, hard constraints, durable preferences, tool results, file/config edits, failed attempts, uncertainties, exact next action, and whether the current task is already complete. Do not add new requirements or invented facts."
 
         $prompt = @"
 Compress this Codex /responses/compact request context into JSON with exactly these keys:
 current_goal, hard_constraints, user_preferences, established_facts, completed_work, files_or_config_changed, failed_or_weak_attempts, open_questions, next_actions, resume_note.
+
+Compression priorities:
+- Organize by resume priority, not chronology.
+- Put the newest user request and active unfinished task first.
+- Separate durable user preferences from task-local constraints.
+- Do not promote temporary debugging facts into durable preferences.
+- Preserve completed tool actions clearly so the next agent does not repeat them.
+- If the current task is complete, set next_actions to verification or waiting rather than more implementation.
+- Current user/developer instructions after this handoff override the handoff.
 
 Context:
 - trigger: $Trigger
@@ -587,7 +618,7 @@ $contextText
             throw "Local Claude Code compaction did not return parseable JSON."
         }
 
-        $result = Write-Outputs $summary $runner "proxy:/responses/compact" $ThreadId $ThreadId $Trigger $OutDir
+        $result = Write-Outputs $summary $runner "proxy:/responses/compact" $ThreadId $ThreadId $Trigger $recentHandoff $OutDir
         $result | ConvertTo-Json -Compress
     } catch {
         New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
@@ -620,11 +651,21 @@ try {
         $ThreadId = $bundle.SessionId
     }
 
-    $system = "You are a strict local context compaction engine for Codex. Return only a valid JSON object. No markdown. No prose outside JSON. Preserve user intent, hard constraints, durable preferences, tool results, file/config edits, failed attempts, uncertainties, and the exact next action. Do not add new requirements or invented facts."
+    $recentHandoff = Get-RecentHandoff $bundle.Text $RecentHandoffChars
+    $system = "You are a strict local context compaction engine for Codex. Return only a valid JSON object. No markdown. No prose outside JSON. Build a resume-ready handoff, not a chronological recap. Preserve user intent, hard constraints, durable preferences, tool results, file/config edits, failed attempts, uncertainties, exact next action, and whether the current task is already complete. Do not add new requirements or invented facts."
 
     $prompt = @"
 Compress this Codex transcript into JSON with exactly these keys:
 current_goal, hard_constraints, user_preferences, established_facts, completed_work, files_or_config_changed, failed_or_weak_attempts, open_questions, next_actions, resume_note.
+
+Compression priorities:
+- Organize by resume priority, not chronology.
+- Put the newest user request and active unfinished task first.
+- Separate durable user preferences from task-local constraints.
+- Do not promote temporary debugging facts into durable preferences.
+- Preserve completed tool actions clearly so the next agent does not repeat them.
+- If the current task is complete, set next_actions to verification or waiting rather than more implementation.
+- Current user/developer instructions after this handoff override the handoff.
 
 Context:
 - trigger: $Trigger
@@ -653,7 +694,7 @@ $($bundle.Text)
         throw "Local Claude Code compaction did not return parseable JSON."
     }
 
-    $result = Write-Outputs $summary $runner $SessionPath $bundle.SessionId $ThreadId $Trigger $OutDir
+    $result = Write-Outputs $summary $runner $SessionPath $bundle.SessionId $ThreadId $Trigger $recentHandoff $OutDir
     if ($Trigger -eq "precompact") {
         exit 0
     } else {

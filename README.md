@@ -133,18 +133,25 @@ supports_websockets = false
 Create `~/.codex/compact_prompt_local.txt`:
 
 ```text
-You are compacting a Codex thread.
+You are compacting a Codex thread into a resume-ready handoff, not a chronological recap.
 
-Preserve the durable state needed to resume work without the original transcript:
+Organize by resume priority:
+- newest user request and active unfinished task first
 - current goal and definition of done
-- user preferences and hard instructions
 - files, config, commands, and tool results that changed the task state
 - failed or weak attempts and why they failed
 - unresolved uncertainty and exact next actions
+- whether the current task is complete; if complete, next action should be verification or waiting
 
-Do not erase negative evidence, rejected approaches, user corrections, or ordering-sensitive decisions.
+Keep memory boundaries clear:
+- separate durable user preferences from task-local constraints
+- do not promote temporary debugging facts into durable preferences
+- do not erase negative evidence, rejected approaches, user corrections, or ordering-sensitive decisions
+- preserve completed tool actions clearly so the next model does not repeat them
 
 If the transcript includes a local Codex compaction handoff from `~/.codex/local-compaction/`, treat that handoff as resume context and keep later corrections or current instructions higher priority.
+If the handoff includes a `Recent Transcript Handoff` section, treat it as verbatim recent context for recovering exact wording when the structured summary is ambiguous.
+Current user/developer instructions after this compact handoff always override the handoff.
 ```
 
 Then add or update this setting in `~/.codex/config.toml`:
