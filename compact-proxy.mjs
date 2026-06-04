@@ -311,6 +311,19 @@ function upstreamPath(reqUrl) {
   return target;
 }
 
+function safeEnd502(res, error) {
+  try {
+    if (!res.headersSent) {
+      res.writeHead(502, { "content-type": "application/json" });
+    }
+    if (!res.writableEnded) {
+      res.end(JSON.stringify({ error: error.message || String(error) }));
+    }
+  } catch {
+    // best effort
+  }
+}
+
 function forward(req, res, body) {
   const target = upstreamPath(req.url);
   const headers = { ...req.headers };
@@ -323,14 +336,23 @@ function forward(req, res, body) {
     target,
     { method: req.method, headers },
     (upstreamRes) => {
-      res.writeHead(upstreamRes.statusCode || 502, upstreamRes.headers);
+      try {
+        res.writeHead(upstreamRes.statusCode || 502, upstreamRes.headers);
+      } catch (error) {
+        appendLog({ kind: "forward_error", path: req.url, message: `writeHead failed: ${error.message}` });
+        safeEnd502(res, error);
+        return;
+      }
+      upstreamRes.on("error", (error) => {
+        appendLog({ kind: "forward_error", path: req.url, message: `upstream stream error: ${error.message}` });
+        safeEnd502(res, error);
+      });
       upstreamRes.pipe(res);
     },
   );
   upstreamReq.on("error", (error) => {
     appendLog({ kind: "forward_error", path: req.url, message: error.message });
-    res.writeHead(502, { "content-type": "application/json" });
-    res.end(JSON.stringify({ error: error.message }));
+    safeEnd502(res, error);
   });
   upstreamReq.end(body);
 }
@@ -389,6 +411,13 @@ const server = http.createServer(async (req, res) => {
     ...requestLogDetails(body),
   });
   forward(req, res, body);
+});
+
+process.on("uncaughtException", (error) => {
+  appendLog({ kind: "uncaught_exception", message: error.message, stack: error.stack });
+});
+process.on("unhandledRejection", (reason) => {
+  appendLog({ kind: "unhandled_rejection", message: reason?.message || String(reason) });
 });
 
 server.listen(port, "127.0.0.1", () => {
