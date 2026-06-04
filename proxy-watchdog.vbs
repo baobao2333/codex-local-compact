@@ -1,2 +1,4 @@
 Set objShell = CreateObject("WScript.Shell")
-objShell.Run "powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""C:\Users\Administrator\.codex\scripts\proxy-watchdog.ps1""", 0, False
+Set fso = CreateObject("Scripting.FileSystemObject")
+watchdog = fso.BuildPath(fso.GetParentFolderName(WScript.ScriptFullName), "proxy-watchdog.ps1")
+objShell.Run "powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File """ & watchdog & """", 0, False
