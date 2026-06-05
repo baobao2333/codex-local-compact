@@ -137,6 +137,7 @@ You are compacting a Codex thread into a resume-ready handoff, not a chronologic
 
 Organize by resume priority:
 - newest user request and active unfinished task first
+- the current goal must describe only the newest active task; put superseded or previous tasks under facts, completed work, or failed attempts
 - current goal and definition of done
 - files, config, commands, and tool results that changed the task state
 - failed or weak attempts and why they failed
@@ -151,6 +152,7 @@ Keep memory boundaries clear:
 
 If the transcript includes a local Codex compaction handoff from `~/.codex/local-compaction/`, treat that handoff as resume context and keep later corrections or current instructions higher priority.
 If the handoff includes a `Recent Transcript Handoff` section, treat it as verbatim recent context for recovering exact wording when the structured summary is ambiguous.
+If earlier context conflicts with the newest verbatim context, prefer the newest context for the active task and next action.
 Current user/developer instructions after this compact handoff always override the handoff.
 ```
 

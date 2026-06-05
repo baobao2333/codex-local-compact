@@ -78,6 +78,18 @@ function Limit-Text([string]$Text, [int]$Limit) {
     return $Text.Substring(0, $Limit) + "`n[...truncated...]"
 }
 
+function Limit-TextKeepingTail([string]$Text, [int]$Limit) {
+    if (-not $Text -or $Text.Length -le $Limit) {
+        return $Text
+    }
+
+    $head = [Math]::Min(30000, [Math]::Max(2000, [int]($Limit / 4)))
+    $head = [Math]::Min($head, [Math]::Max(0, $Limit - 1000))
+    $tail = [Math]::Max(0, $Limit - $head - 80)
+    $tail = [Math]::Min($tail, $Text.Length - $head)
+    return $Text.Substring(0, $head) + "`n[...middle truncated by local-compact.ps1; newest context preserved below...]`n" + $Text.Substring($Text.Length - $tail)
+}
+
 function Get-RecentHandoff([string]$Text, [int]$Limit) {
     if (-not $Text) {
         return ""
@@ -571,12 +583,12 @@ if ($Trigger -eq "proxycompact") {
     try {
         New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
         if (-not $ThreadId) {
-            $ThreadId = Find-FirstUuid $stdinText
+            $ThreadId = "proxycompact"
         }
 
-        $contextText = Limit-Text $stdinText $MaxChars
-        $recentHandoff = Get-RecentHandoff $contextText $RecentHandoffChars
-        $system = "You are a strict local context compaction engine for Codex. Return only a valid JSON object. No markdown. No prose outside JSON. Build a resume-ready handoff, not a chronological recap. Preserve user intent, hard constraints, durable preferences, tool results, file/config edits, failed attempts, uncertainties, exact next action, and whether the current task is already complete. Do not add new requirements or invented facts."
+        $contextText = Limit-TextKeepingTail $stdinText $MaxChars
+        $recentHandoff = Get-RecentHandoff $stdinText $RecentHandoffChars
+        $system = "You are a strict local context compaction engine for Codex. Return only a valid JSON object. No markdown. No prose outside JSON. Build a resume-ready handoff, not a chronological recap. Preserve user intent, hard constraints, durable preferences, tool results, file/config edits, failed attempts, uncertainties, exact next action, and whether the current task is already complete. Prefer the newest verbatim context when it conflicts with earlier context. Do not add new requirements or invented facts."
 
         $prompt = @"
 Compress this Codex /responses/compact request context into JSON with exactly these keys:
@@ -585,18 +597,25 @@ current_goal, hard_constraints, user_preferences, established_facts, completed_w
 Compression priorities:
 - Organize by resume priority, not chronology.
 - Put the newest user request and active unfinished task first.
+- The current_goal field must describe only the newest active task; put superseded or previous tasks under established_facts, completed_work, or failed_or_weak_attempts.
 - Separate durable user preferences from task-local constraints.
 - Do not promote temporary debugging facts into durable preferences.
 - Preserve completed tool actions clearly so the next agent does not repeat them.
 - If the current task is complete, set next_actions to verification or waiting rather than more implementation.
 - Current user/developer instructions after this handoff override the handoff.
 
+Newest verbatim context excerpt:
+Use this as the highest-priority evidence for the latest user request and active unfinished task.
+----- BEGIN NEWEST VERBATIM CONTEXT -----
+$recentHandoff
+----- END NEWEST VERBATIM CONTEXT -----
+
 Context:
 - trigger: $Trigger
 - source_session: proxy:/responses/compact
 - thread_id: $ThreadId
 
-Compact request context:
+Compact request context, preserving both the beginning and newest tail if truncated:
 $contextText
 "@
 
@@ -628,6 +647,11 @@ $contextText
             status = "error"
             message = $_.Exception.Message
             stack = $_.ScriptStackTrace
+            hook_event_name = if ($hookInput) { $hookInput.hook_event_name } else { $null }
+            hook_trigger = if ($hookInput) { $hookInput.trigger } else { $null }
+            session_id = if ($hookInput) { $hookInput.session_id } else { $ThreadId }
+            thread_id = $ThreadId
+            source_session = $SessionPath
         } | ConvertTo-Json -Compress) | Add-Content -LiteralPath (Join-Path $OutDir "events.jsonl") -Encoding UTF8
         ([ordered]@{ status = "error"; message = $_.Exception.Message; stack = $_.ScriptStackTrace } | ConvertTo-Json -Compress)
     }
@@ -652,7 +676,7 @@ try {
     }
 
     $recentHandoff = Get-RecentHandoff $bundle.Text $RecentHandoffChars
-    $system = "You are a strict local context compaction engine for Codex. Return only a valid JSON object. No markdown. No prose outside JSON. Build a resume-ready handoff, not a chronological recap. Preserve user intent, hard constraints, durable preferences, tool results, file/config edits, failed attempts, uncertainties, exact next action, and whether the current task is already complete. Do not add new requirements or invented facts."
+    $system = "You are a strict local context compaction engine for Codex. Return only a valid JSON object. No markdown. No prose outside JSON. Build a resume-ready handoff, not a chronological recap. Preserve user intent, hard constraints, durable preferences, tool results, file/config edits, failed attempts, uncertainties, exact next action, and whether the current task is already complete. Prefer the newest verbatim context when it conflicts with earlier context. Do not add new requirements or invented facts."
 
     $prompt = @"
 Compress this Codex transcript into JSON with exactly these keys:
@@ -661,11 +685,18 @@ current_goal, hard_constraints, user_preferences, established_facts, completed_w
 Compression priorities:
 - Organize by resume priority, not chronology.
 - Put the newest user request and active unfinished task first.
+- The current_goal field must describe only the newest active task; put superseded or previous tasks under established_facts, completed_work, or failed_or_weak_attempts.
 - Separate durable user preferences from task-local constraints.
 - Do not promote temporary debugging facts into durable preferences.
 - Preserve completed tool actions clearly so the next agent does not repeat them.
 - If the current task is complete, set next_actions to verification or waiting rather than more implementation.
 - Current user/developer instructions after this handoff override the handoff.
+
+Newest verbatim context excerpt:
+Use this as the highest-priority evidence for the latest user request and active unfinished task.
+----- BEGIN NEWEST VERBATIM CONTEXT -----
+$recentHandoff
+----- END NEWEST VERBATIM CONTEXT -----
 
 Context:
 - trigger: $Trigger
@@ -708,6 +739,11 @@ $($bundle.Text)
         status = "error"
         message = $_.Exception.Message
         stack = $_.ScriptStackTrace
+        hook_event_name = if ($hookInput) { $hookInput.hook_event_name } else { $null }
+        hook_trigger = if ($hookInput) { $hookInput.trigger } else { $null }
+        session_id = if ($hookInput) { $hookInput.session_id } else { $bundle.SessionId }
+        thread_id = $ThreadId
+        source_session = $SessionPath
     } | ConvertTo-Json -Compress) | Add-Content -LiteralPath (Join-Path $OutDir "events.jsonl") -Encoding UTF8
     if ($Trigger -eq "precompact") {
         exit 0
